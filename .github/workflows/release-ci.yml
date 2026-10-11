@@ -1,0 +1,290 @@
+name: Release CI
+
+# 把 fork 的 master（= 上游最新代码）编成与官方 release 同形态的 6 个资产，
+# 发布到固定滚动页 tag `ci`（保留最近 KEEP_GROUPS 组），资产名带 r<日期>.<短号>。
+#
+# 设计约束（见 ci/fork/README.md 之外的取舍都写在这里）：
+#   · 上游的 Dockerfile.mingw / Dockerfile.android / mingw-release / android-release / script-helper
+#     一律不改。容器侧的仓库地址与版本注入由 ci/fork/patch-dockerfile.sh 生成临时副本完成，
+#     所以同步上游后不会产生这两类文件的冲突。
+#   · 版本串注入只发生在工作区，不产生提交 —— fork 的 master 与上游保持逐字一致。
+#   · 上游正式版是维护者本机跑 makerelease 手工发布的（CI 里从来没有发布步骤），本工作流把
+#     同一套流程（make dist-* + docker build mingw/android + 打包脚本）搬到 CI。
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 构建的 ref（分支或 tag），默认 fork master
+        default: master
+        required: true
+
+permissions:
+  contents: write
+
+# 清理旧组资产是「先算删单再删」，并发 run 会各算出不同删单 ⇒ 串行排队
+concurrency:
+  group: release-ci
+  cancel-in-progress: false
+
+env:
+  FORK_REPO: https://github.com/Vstory/aria2.F
+  UPSTREAM_REPO: https://github.com/aria2/aria2
+  BASE_VERSION: '1.37.0'
+  BASE_RELEASE_TAG: release-1.37.0
+  CI_TAG: ci
+  CI_TITLE: CI Build
+  KEEP_GROUPS: '6'
+  ALLOW_STUB_MAN: 'false'
+
+jobs:
+  version:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      sha: ${{ steps.v.outputs.sha }}
+    steps:
+      - id: v
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          SHA=""
+          for r in "refs/heads/$REF" "refs/tags/$REF^{}" "refs/tags/$REF"; do
+            SHA=$(git ls-remote "$FORK_REPO" "$r" | head -1 | cut -f1)
+            [ -n "$SHA" ] && break
+          done
+          [ -n "$SHA" ] || { echo "::error::解析不出 ref $REF 的 commit"; exit 1; }
+          VERSION="$BASE_VERSION.r$(date -u +%Y%m%d).${SHA:0:7}"
+          {
+            echo "version=$VERSION"
+            echo "sha=$SHA"
+          } >>"$GITHUB_OUTPUT"
+          {
+            echo "### 版本串 \`$VERSION\`"
+            echo
+            echo "- 构建 ref：\`$REF\`（\`$SHA\`）"
+            echo "- 上游基线：\`$BASE_RELEASE_TAG\`"
+          } >>"$GITHUB_STEP_SUMMARY"
+          echo "version=$VERSION sha=$SHA"
+
+  source:
+    needs: version
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Install build deps
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf automake autotools-dev autopoint libtool pkg-config \
+            git g++ libssl-dev libgnutls28-dev libc-ares-dev zlib1g-dev \
+            libsqlite3-dev libssh2-1-dev libxml2-dev libcppunit-dev \
+            python3-docutils
+          # sphinx 钉在 7.2.6：官方 1.37.0 的 man page 是 2023-11 生成的，新版 sphinx
+          # 对这份老 conf.py（extensions 为空 + 仓库内主题）不保证能过
+          pip3 install --quiet "sphinx==7.2.6"
+      - name: Prepare source tree
+        run: |
+          set -euo pipefail
+          git fetch --no-tags "$UPSTREAM_REPO" \
+            "refs/tags/$BASE_RELEASE_TAG:refs/tags/$BASE_RELEASE_TAG"
+          ci/fork/prepare-source.sh inject "$VERSION"
+          ci/fork/prepare-source.sh changelog "$BASE_RELEASE_TAG"
+      - name: Build dist tarballs
+        run: |
+          set -euo pipefail
+          autoreconf -i
+          ./configure
+          make dist-gzip dist-bzip2 dist-xz
+      - name: Verify dist tarballs
+        run: ci/fork/verify-dist.sh "$VERSION" "$ALLOW_STUB_MAN"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: meta
+          path: |
+            ChangeLog
+            README.html
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sources
+          path: aria2-*.tar.*
+
+  mingw:
+    needs: [version, source]
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: i686-w64-mingw32
+            label: win-32bit
+          - host: x86_64-w64-mingw32
+            label: win-64bit
+    env:
+      HOST: ${{ matrix.host }}
+      LABEL: ${{ matrix.label }}
+      VERSION: ${{ needs.version.outputs.version }}
+      BUILD_REF: ${{ inputs.ref }}
+      ARIA2_REF: ${{ needs.version.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Fetch ChangeLog / README.html
+        uses: actions/download-artifact@v8
+        with:
+          name: meta
+      # zip 里要放带短号的版本名，而 ./mingw-release 是从本工作区的 configure.ac 读版本的
+      - name: Inject version into workspace
+        run: ci/fork/prepare-source.sh inject "$VERSION"
+      - name: Patch Dockerfile (temp copy)
+        run: ci/fork/patch-dockerfile.sh Dockerfile.mingw /tmp/Dockerfile.mingw.build
+      - name: Build mingw image and extract binary
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg HOST="$HOST" \
+            --build-arg ARIA2_REF="$ARIA2_REF" \
+            -f /tmp/Dockerfile.mingw.build \
+            -t "aria2-mingw-$HOST" .
+          mkdir -p mingw-out
+          docker run --rm -v "$PWD/mingw-out:/out" "aria2-mingw-$HOST" \
+            cp /aria2/src/aria2c.exe /out
+          ls -la mingw-out
+      - name: Package
+        run: ./mingw-release
+      - name: Verify package
+        run: |
+          set -euo pipefail
+          ZIP="aria2-$VERSION-$LABEL-build1.zip"
+          [ -f "$ZIP" ] || { echo "::error::缺产物 $ZIP"; exit 1; }
+          ZIP="$ZIP" python3 - <<'PY'
+          import os, zipfile
+          z = zipfile.ZipFile(os.environ["ZIP"])
+          names = z.namelist()
+          need = ["aria2c.exe", "AUTHORS", "COPYING", "ChangeLog", "LICENSE.OpenSSL",
+                  "NEWS", "README.html", "README.mingw"]
+          missing = [n for n in need if not any(i.endswith("/" + n) for i in names)]
+          if missing:
+              raise SystemExit("::error::%s 缺少 %s" % (os.environ["ZIP"], missing))
+          readme = next(i for i in names if i.endswith("README.html"))
+          if b"Readme has not been built" in z.read(readme):
+              raise SystemExit("::error::zip 里的 README.html 是 rst2html 缺失时的占位文件")
+          print("  ✅ %s：%d 项（含 %s）" % (os.environ["ZIP"], len(names), need[0]))
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mingw-${{ matrix.label }}
+          path: aria2-*-${{ matrix.label }}-build1.zip
+
+  android:
+    needs: [version, source]
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      BUILD_REF: ${{ inputs.ref }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Fetch ChangeLog / README.html
+        uses: actions/download-artifact@v8
+        with:
+          name: meta
+      - name: Inject version into workspace
+        run: ci/fork/prepare-source.sh inject "$VERSION"
+      - name: Patch Dockerfile (temp copy)
+        run: ci/fork/patch-dockerfile.sh Dockerfile.android /tmp/Dockerfile.android.build
+      - name: Build android image and extract binary
+        run: |
+          set -euo pipefail
+          docker build -f /tmp/Dockerfile.android.build -t aria2-android .
+          mkdir -p android-out
+          docker run --rm -v "$PWD/android-out:/out" aria2-android \
+            cp /root/build/aria2/src/aria2c /out
+          ls -la android-out
+      - name: Package
+        run: ./android-release
+      - name: Verify package
+        run: |
+          set -euo pipefail
+          ZIP="aria2-$VERSION-aarch64-linux-android-build1.zip"
+          [ -f "$ZIP" ] || { echo "::error::缺产物 $ZIP"; exit 1; }
+          ZIP="$ZIP" python3 - <<'PY'
+          import os, zipfile
+          z = zipfile.ZipFile(os.environ["ZIP"])
+          names = z.namelist()
+          need = ["aria2c", "AUTHORS", "COPYING", "ChangeLog", "LICENSE.OpenSSL",
+                  "NEWS", "README.html", "README.android"]
+          missing = [n for n in need if not any(i.endswith("/" + n) for i in names)]
+          if missing:
+              raise SystemExit("::error::%s 缺少 %s" % (os.environ["ZIP"], missing))
+          readme = next(i for i in names if i.endswith("README.html"))
+          if b"Readme has not been built" in z.read(readme):
+              raise SystemExit("::error::zip 里的 README.html 是 rst2html 缺失时的占位文件")
+          print("  ✅ %s：%d 项（含 %s）" % (os.environ["ZIP"], len(names), need[0]))
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android-aarch64
+          path: aria2-*-aarch64-linux-android-build1.zip
+
+  publish:
+    needs: [version, source, mingw, android]
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.version.outputs.version }}
+      SHA: ${{ needs.version.outputs.sha }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+          path: dist
+      - name: Check asset set
+        run: |
+          set -euo pipefail
+          ls -l dist
+          count=$(find dist -type f | wc -l)
+          [ "$count" -eq 6 ] || { echo "::error::资产数 $count（期望 6）"; exit 1; }
+          for f in "aria2-$VERSION.tar.gz" "aria2-$VERSION.tar.bz2" "aria2-$VERSION.tar.xz" \
+                   "aria2-$VERSION-win-32bit-build1.zip" "aria2-$VERSION-win-64bit-build1.zip" \
+                   "aria2-$VERSION-aarch64-linux-android-build1.zip"; do
+            [ -f "dist/$f" ] || { echo "::error::缺资产 $f"; exit 1; }
+          done
+      - name: Publish to rolling release
+        run: |
+          set -euo pipefail
+          if ! gh release view "$CI_TAG" >/dev/null 2>&1; then
+            gh release create "$CI_TAG" \
+              --title "$CI_TITLE" \
+              --target "$SHA" \
+              --prerelease \
+              --latest=false \
+              --notes "$(printf '%s\n' \
+                "aria2 fork（Vstory/aria2.F）的滚动构建页，由 GitHub Actions 从最新代码编译。" \
+                "" \
+                "资产构成与官方 release 一致：源码包 tar.gz / tar.bz2 / tar.xz、Windows 32/64 位、Android aarch64。" \
+                "" \
+                "版本串格式 \`<上游版本>.r<构建日期>.<commit 短号>\` —— 上游 configure.ac 长期停在 1.37.0 且自 2023-11 未发布新版，" \
+                "因此版本号沿用上游值、只靠后缀区分构建批次。" \
+                "" \
+                "仅保留最近 $KEEP_GROUPS 次构建，旧批次会被自动清理。")"
+          fi
+          gh release upload "$CI_TAG" dist/* --clobber
+          ci/fork/prune-release-assets.sh
+      - name: Summarize
+        run: |
+          {
+            echo "### 已发布 \`$VERSION\`"
+            echo
+            echo "- 下载页：https://github.com/${GITHUB_REPOSITORY}/releases/tag/$CI_TAG"
+            echo "- 构建 commit：\`$SHA\`"
+          } >>"$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,4 @@
+# Docker 构建只用到 Dockerfile 里的 ADD URL，仓库本身不进镜像上下文
+.git
+mingw-out
+android-out
