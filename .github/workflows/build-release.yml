@@ -265,6 +265,8 @@ jobs:
     timeout-minutes: 15
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # publish 不 checkout，gh 无法从 git remote 推断仓库，必须显式告诉它
+      GH_REPO: ${{ github.repository }}
       VERSION: ${{ needs.version.outputs.version }}
       SHA: ${{ needs.version.outputs.sha }}
     steps:
