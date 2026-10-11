@@ -63,6 +63,20 @@ if hits_add > 1:
 if had_sentinel and ("api.github.com/repos/%s/commits/$ARIA2_REF" % fork_slug) not in text:
     problems.append("ADD 缓存哨兵未改成 /commits/$ARIA2_REF 形态")
 
+# gmplib.org 从 CI 侧连不上（实测单个源 TCP 超时 135s，其余五个源都正常），换成 GNU 官方镜像的
+# 同版本 tarball；文件名不变，后续 tar xf / configure 步骤无需跟着改。
+text, hits_gmp = re.subn(r"https://gmplib\.org/download/gmp/", "https://ftp.gnu.org/gnu/gmp/", text)
+if hits_gmp > 1 or "gmplib.org" in text:
+    problems.append("gmp 下载源未按预期换成 GNU 镜像（命中 %d 处，残留 %s）"
+                    % (hits_gmp, "gmplib.org" in text))
+
+# 给依赖下载的 curl 补重试与连接超时：默认连接超时会让一次抖动拖满两分钟才失败，白烧整轮构建
+before_curls = text.count("curl -L -O http")
+text, hits_curl = re.subn(r"curl -L -O http",
+                          "curl -L -O --retry 5 --retry-delay 5 --connect-timeout 20 http", text)
+if hits_curl != before_curls:
+    problems.append("curl 加固命中 %d 处（期望 %d 处）" % (hits_curl, before_curls))
+
 for stale in ("github.com/aria2/aria2", "api.github.com/repos/aria2/aria2"):
     if stale in text:
         problems.append("替换后仍残留上游地址 %s" % stale)
