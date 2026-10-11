@@ -1,4 +1,4 @@
-name: Release CI
+name: Build · Release
 
 # 把 fork 的 master（= 上游最新代码）编成与官方 release 同形态的 6 个资产，
 # 发布到固定滚动页 tag `ci`（保留最近 KEEP_GROUPS 组），资产名带 r<日期>.<短号>。
