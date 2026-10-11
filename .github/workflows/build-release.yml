@@ -51,6 +51,7 @@ jobs:
       version: ${{ steps.v.outputs.version }}
       tag: ${{ steps.v.outputs.tag }}
       sha: ${{ steps.v.outputs.sha }}
+      upstream_sha: ${{ steps.v.outputs.upstream_sha }}
     steps:
       - id: v
         env:
@@ -63,19 +64,23 @@ jobs:
             [ -n "$SHA" ] && break
           done
           [ -n "$SHA" ] || { echo "::error::解析不出 ref $REF 的 commit"; exit 1; }
+          # 发布页正文要挂上游开发线的当前尖端，每次构建现取
+          UPSTREAM_SHA=$(git ls-remote "$UPSTREAM_REPO" refs/heads/master | sed -n 1p | cut -f1)
+          [ -n "$UPSTREAM_SHA" ] || { echo "::error::解析不出上游 master 的 commit"; exit 1; }
           VERSION="$BASE_VERSION.r$(date -u +%Y%m%d).${SHA:0:7}"
           TAG="$TAG_PREFIX$VERSION"
           {
             echo "version=$VERSION"
             echo "tag=$TAG"
             echo "sha=$SHA"
+            echo "upstream_sha=$UPSTREAM_SHA"
           } >>"$GITHUB_OUTPUT"
           {
             echo "### 版本串 \`$VERSION\`"
             echo
             echo "- 发布 tag：\`$TAG\`（一版一页）"
             echo "- 构建 ref：\`$REF\`（\`$SHA\`）"
-            echo "- 上游基线：\`$BASE_RELEASE_TAG\`"
+            echo "- 上游基线：\`$BASE_RELEASE_TAG\`（上游 master 当前 \`${UPSTREAM_SHA:0:7}\`）"
           } >>"$GITHUB_STEP_SUMMARY"
           echo "version=$VERSION tag=$TAG sha=$SHA"
 
@@ -269,6 +274,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       VERSION: ${{ needs.version.outputs.version }}
       SHA: ${{ needs.version.outputs.sha }}
+      UPSTREAM_SHA: ${{ needs.version.outputs.upstream_sha }}
     steps:
       # 只取产物 artifact；meta（ChangeLog / README.html）是 job 间打包用的传递介质，
       # 一并拉下来会让下面的资产数检查多出两个文件
@@ -304,7 +310,7 @@ jobs:
           TAG: ${{ needs.version.outputs.tag }}
         run: |
           set -euo pipefail
-          NOTES="构建 commit \`$SHA\`；上游基线 \`$BASE_RELEASE_TAG\`。"
+          NOTES="构建 [${SHA:0:7}]($FORK_REPO/commit/$SHA)；上游基线 $BASE_RELEASE_TAG [${UPSTREAM_SHA:0:7}]($UPSTREAM_REPO/commit/$UPSTREAM_SHA)。"
           # 展开时不加引号是有意的：空值必须让该参数整体消失
           PRERELEASE_FLAG=""
           if [ "$RELEASE_PRERELEASE" = "true" ]; then
