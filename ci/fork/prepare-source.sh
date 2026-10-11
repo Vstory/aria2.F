@@ -8,6 +8,7 @@ cd "$(dirname "$0")/../.."
 usage() {
     echo "usage: $0 inject <version>" >&2
     echo "       $0 changelog <base-tag>" >&2
+    echo "       $0 copyright" >&2
     exit 2
 }
 
@@ -39,6 +40,18 @@ changelog)
     # 官方 tar 包里的 ChangeLog 就是这份内容（上游 makerelease 用同一条命令生成）
     git log --pretty=fuller --date=short "refs/tags/$arg..HEAD" >ChangeLog
     echo "ChangeLog: $(wc -l <ChangeLog) 行（$arg..HEAD）"
+    ;;
+copyright)
+    # --version 里那行 fork 版权：GPLv2 §2(a) 要求修改版带「已修改」的显著声明，
+    # 且发布的二进制必须配同源源码 —— 所以补丁打在打包前的工作区，容器构建用同一份补丁
+    patch_file="ci/fork/patches/0001-version-copyright.patch"
+    git apply --check "$patch_file"
+    git apply "$patch_file"
+    grep -qF 'Copyright (C) 2026 Vstory (modified version of aria2)' src/version_usage.cc \
+        || { echo "版权补丁未生效" >&2; exit 1; }
+    grep -qF 'Copyright (C) 2006, 2019 Tatsuhiro Tsujikawa' src/version_usage.cc \
+        || { echo "原作者版权行被删了" >&2; exit 1; }
+    echo "src/version_usage.cc → 已加 fork 版权行（原作者行保留）"
     ;;
 *)
     usage

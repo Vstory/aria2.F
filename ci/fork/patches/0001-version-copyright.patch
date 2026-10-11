@@ -1,0 +1,13 @@
+diff --git a/src/version_usage.cc b/src/version_usage.cc
+index d2218b4..b7043c4 100644
+--- a/src/version_usage.cc
++++ b/src/version_usage.cc
+@@ -56,6 +56,8 @@ void showVersion()
+       << PACKAGE << _(" version ") << PACKAGE_VERSION << "\n"
+       << "Copyright (C) 2006, 2019 Tatsuhiro Tsujikawa"
+       << "\n"
++      << "Copyright (C) 2026 Vstory (modified version of aria2)"
++      << "\n"
+       << "\n"
+       << _("This program is free software; you can redistribute it and/or "
+            "modify\n"

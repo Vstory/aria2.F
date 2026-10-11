@@ -114,6 +114,7 @@ jobs:
             "refs/tags/$BASE_RELEASE_TAG:refs/tags/$BASE_RELEASE_TAG"
           ci/fork/prepare-source.sh inject "$VERSION"
           ci/fork/prepare-source.sh changelog "$BASE_RELEASE_TAG"
+          ci/fork/prepare-source.sh copyright
       - name: Build dist tarballs
         run: |
           set -euo pipefail

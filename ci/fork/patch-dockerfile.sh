@@ -40,19 +40,29 @@ fetch_cmd = (
     "git init -q {dir} && cd {dir} && git remote add origin {fork} && "
     "git fetch -q --depth 1 origin {sha} && git checkout -q FETCH_HEAD"
 )
+# --version 输出里的 fork 版权行：补丁随源码进容器（fetch 下来的就是 fork 仓库，补丁在 ci/fork/patches/）。
+# 源码包与容器必须打同一份补丁，否则二进制与「对应源码」对不上（GPL 的 source 义务）。
+copyright_patch = "ci/fork/patches/0001-version-copyright.patch"
+if not os.path.exists(copyright_patch):
+    problems.append("版权补丁文件缺失：%s" % copyright_patch)
+apply_cmd = "git apply %s" % copyright_patch
 clone_old = r"git clone -b \$ARIA2_VERSION --depth 1 https://github\.com/aria2/aria2"
 
 # 形态 A：clone 与其后的 cd 在同一条 RUN 里（Dockerfile.mingw）
 pat_a = re.compile(clone_old + r" && \\\n[ \t]*cd aria2")
-new_a = "%s && %s" % (fetch_cmd.format(dir="aria2", fork=fork, sha=sha), sed_inject())
+new_a = "%s && %s && %s" % (
+    fetch_cmd.format(dir="aria2", fork=fork, sha=sha), sed_inject(), apply_cmd)
 # 形态 B：clone 独占一行（Dockerfile.android，紧随其后是 WORKDIR）
 pat_b = re.compile(clone_old + r"[ \t]*$", re.M)
-new_b = "%s && %s" % (fetch_cmd.format(dir="/root/build/aria2", fork=fork, sha=sha), sed_inject())
+new_b = "%s && %s && %s" % (
+    fetch_cmd.format(dir="/root/build/aria2", fork=fork, sha=sha), sed_inject(), apply_cmd)
 
 text, hits_a = pat_a.subn(lambda _: new_a, text, count=1)
 text, hits_b = pat_b.subn(lambda _: new_b, text, count=1)
 if hits_a + hits_b != 1:
     problems.append("git clone 行命中 %d 处（期望 1 处）：上游 Dockerfile 结构已变" % (hits_a + hits_b))
+if text.count(apply_cmd) != 1:
+    problems.append("版权补丁应用语句命中 %d 处（期望 1 处）" % text.count(apply_cmd))
 
 # ADD 行是 Docker 层缓存的哨兵（mingw 有、android 没有）。上游写的是 /git/$ARIA2_REF，
 # 而 /git/{sha} 不是 GitHub 的端点（404）—— 必须换成 /commits/{sha}。
