@@ -268,9 +268,23 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       SHA: ${{ needs.version.outputs.sha }}
     steps:
+      # 只取产物 artifact；meta（ChangeLog / README.html）是 job 间打包用的传递介质，
+      # 一并拉下来会让下面的资产数检查多出两个文件
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          merge-multiple: true
+          name: sources
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: mingw-win-32bit
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: mingw-win-64bit
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: android-aarch64
           path: dist
       - name: Check asset set
         run: |
