@@ -10,6 +10,10 @@ name: Release CI
 #   · 版本串注入只发生在工作区，不产生提交 —— fork 的 master 与上游保持逐字一致。
 #   · 上游正式版是维护者本机跑 makerelease 手工发布的（CI 里从来没有发布步骤），本工作流把
 #     同一套流程（make dist-* + docker build mingw/android + 打包脚本）搬到 CI。
+#   · 本 fork 开了 sha_pinning_required（仓库设置），action 写 @vX 会被直接拒：
+#     "is not allowed ... because all actions must be pinned to a full-length commit SHA"。
+#     上游的 build.yml 因此在 fork 上永远跑不起来。此文件里的 action 一律钉完整 SHA，
+#     升级时连同行尾版本注释一起改（Dependabot 也认这种形式）。
 
 on:
   workflow_dispatch:
@@ -74,7 +78,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
@@ -105,13 +109,13 @@ jobs:
           make dist-gzip dist-bzip2 dist-xz
       - name: Verify dist tarballs
         run: ci/fork/verify-dist.sh "$VERSION" "$ALLOW_STUB_MAN"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: meta
           path: |
             ChangeLog
             README.html
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sources
           path: aria2-*.tar.*
@@ -134,11 +138,11 @@ jobs:
       BUILD_REF: ${{ inputs.ref }}
       ARIA2_REF: ${{ needs.version.outputs.sha }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
       - name: Fetch ChangeLog / README.html
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: meta
       # zip 里要放带短号的版本名，而 ./mingw-release 是从本工作区的 configure.ac 读版本的
@@ -179,7 +183,7 @@ jobs:
               raise SystemExit("::error::zip 里的 README.html 是 rst2html 缺失时的占位文件")
           print("  ✅ %s：%d 项（含 %s）" % (os.environ["ZIP"], len(names), need[0]))
           PY
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mingw-${{ matrix.label }}
           path: aria2-*-${{ matrix.label }}-build1.zip
@@ -191,11 +195,11 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       BUILD_REF: ${{ inputs.ref }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
       - name: Fetch ChangeLog / README.html
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: meta
       - name: Inject version into workspace
@@ -231,7 +235,7 @@ jobs:
               raise SystemExit("::error::zip 里的 README.html 是 rst2html 缺失时的占位文件")
           print("  ✅ %s：%d 项（含 %s）" % (os.environ["ZIP"], len(names), need[0]))
           PY
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: android-aarch64
           path: aria2-*-aarch64-linux-android-build1.zip
@@ -244,7 +248,7 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       SHA: ${{ needs.version.outputs.sha }}
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           merge-multiple: true
           path: dist
