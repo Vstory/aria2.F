@@ -1,7 +1,8 @@
 name: Build · Release
 
 # 把 fork 的 master（= 上游最新代码）编成与官方 release 同形态的 6 个资产，
-# 发布到固定滚动页 tag `ci`（保留最近 KEEP_GROUPS 组），资产名带 r<日期>.<短号>。
+# 每次构建打一个新 tag、发一版一页（对齐官方 release-<版本> 的做法，不做滚动页、不清理旧页）。
+# tag 名 = TAG_PREFIX + 版本串，版本串形如 1.37.0.r<日期>.<短号>。
 #
 # 设计约束（见 ci/fork/README.md 之外的取舍都写在这里）：
 #   · 上游的 Dockerfile.mingw / Dockerfile.android / mingw-release / android-release / script-helper
@@ -26,7 +27,7 @@ on:
 permissions:
   contents: write
 
-# 清理旧组资产是「先算删单再删」，并发 run 会各算出不同删单 ⇒ 串行排队
+# 同一 tag 的重跑会同时往同一页传资产（重复上传同名资产会 422）⇒ 串行排队
 concurrency:
   group: release-ci
   cancel-in-progress: false
@@ -36,9 +37,10 @@ env:
   UPSTREAM_REPO: https://github.com/aria2/aria2
   BASE_VERSION: '1.37.0'
   BASE_RELEASE_TAG: release-1.37.0
-  CI_TAG: ci
-  CI_TITLE: CI Build
-  KEEP_GROUPS: '6'
+  # tag 命名规则：改这一行即可（例如改成 'v'、'aria2-'，或留空表示直接用版本串当 tag）
+  TAG_PREFIX: release-
+  # 想让这一页挂 Pre-release 徽标且不抢 Latest，改成 'true'
+  RELEASE_PRERELEASE: 'false'
   ALLOW_STUB_MAN: 'false'
 
 jobs:
@@ -47,6 +49,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
       sha: ${{ steps.v.outputs.sha }}
     steps:
       - id: v
@@ -56,22 +59,25 @@ jobs:
           set -euo pipefail
           SHA=""
           for r in "refs/heads/$REF" "refs/tags/$REF^{}" "refs/tags/$REF"; do
-            SHA=$(git ls-remote "$FORK_REPO" "$r" | head -1 | cut -f1)
+            SHA=$(git ls-remote "$FORK_REPO" "$r" | sed -n 1p | cut -f1)
             [ -n "$SHA" ] && break
           done
           [ -n "$SHA" ] || { echo "::error::解析不出 ref $REF 的 commit"; exit 1; }
           VERSION="$BASE_VERSION.r$(date -u +%Y%m%d).${SHA:0:7}"
+          TAG="$TAG_PREFIX$VERSION"
           {
             echo "version=$VERSION"
+            echo "tag=$TAG"
             echo "sha=$SHA"
           } >>"$GITHUB_OUTPUT"
           {
             echo "### 版本串 \`$VERSION\`"
             echo
+            echo "- 发布 tag：\`$TAG\`（一版一页）"
             echo "- 构建 ref：\`$REF\`（\`$SHA\`）"
             echo "- 上游基线：\`$BASE_RELEASE_TAG\`"
           } >>"$GITHUB_STEP_SUMMARY"
-          echo "version=$VERSION sha=$SHA"
+          echo "version=$VERSION tag=$TAG sha=$SHA"
 
   source:
     needs: version
@@ -277,32 +283,43 @@ jobs:
                    "aria2-$VERSION-aarch64-linux-android-build1.zip"; do
             [ -f "dist/$f" ] || { echo "::error::缺资产 $f"; exit 1; }
           done
-      - name: Publish to rolling release
+      - name: Publish release
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
           set -euo pipefail
-          if ! gh release view "$CI_TAG" >/dev/null 2>&1; then
-            gh release create "$CI_TAG" \
-              --title "$CI_TITLE" \
-              --target "$SHA" \
-              --prerelease \
-              --latest=false \
-              --notes "$(printf '%s\n' \
-                "aria2 fork（Vstory/aria2.F）的滚动构建页，由 GitHub Actions 从最新代码编译。" \
-                "" \
-                "资产构成与官方 release 一致：源码包 tar.gz / tar.bz2 / tar.xz、Windows 32/64 位、Android aarch64。" \
-                "" \
-                "版本串格式 \`<上游版本>.r<构建日期>.<commit 短号>\` —— 上游 configure.ac 长期停在 1.37.0 且自 2023-11 未发布新版，" \
-                "因此版本号沿用上游值、只靠后缀区分构建批次。" \
-                "" \
-                "仅保留最近 $KEEP_GROUPS 次构建，旧批次会被自动清理。")"
+          NOTES="$(printf '%s\n' \
+            "aria2 fork（Vstory/aria2.F）由 GitHub Actions 从最新上游代码编译，资产构成与官方 release 一致：" \
+            "源码包 tar.gz / tar.bz2 / tar.xz、Windows 32/64 位、Android aarch64。" \
+            "" \
+            "版本串 \`<上游版本>.r<构建日期>.<commit 短号>\` —— 上游 configure.ac 长期停在 1.37.0 且自 2023-11 未发布新版，" \
+            "所以版本号沿用上游值、只用后缀区分构建批次。" \
+            "" \
+            "构建 commit \`$SHA\`；ChangeLog 基线 \`$BASE_RELEASE_TAG\`。")"
+          # 展开时不加引号是有意的：空值必须让该参数整体消失
+          PRERELEASE_FLAG=""
+          if [ "$RELEASE_PRERELEASE" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease --latest=false"
           fi
-          gh release upload "$CI_TAG" dist/* --clobber
-          ci/fork/prune-release-assets.sh
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # 同一版本重跑（修 CI 用）走这一支：刷新正文、覆盖同名资产，不新建 tag
+            echo "tag $TAG 已存在 —— 按重跑处理"
+            gh release edit "$TAG" --notes "$NOTES"
+          else
+            gh release create "$TAG" \
+              --title "aria2 $VERSION" \
+              --target "$SHA" \
+              $PRERELEASE_FLAG \
+              --notes "$NOTES"
+          fi
+          gh release upload "$TAG" dist/* --clobber
       - name: Summarize
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
           {
-            echo "### 已发布 \`$VERSION\`"
+            echo "### 已发布 \`$TAG\`"
             echo
-            echo "- 下载页：https://github.com/${GITHUB_REPOSITORY}/releases/tag/$CI_TAG"
+            echo "- 下载页：https://github.com/${GITHUB_REPOSITORY}/releases/tag/$TAG"
             echo "- 构建 commit：\`$SHA\`"
           } >>"$GITHUB_STEP_SUMMARY"
