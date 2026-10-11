@@ -44,6 +44,7 @@ env:
 jobs:
   version:
     runs-on: ubuntu-22.04
+    timeout-minutes: 5
     outputs:
       version: ${{ steps.v.outputs.version }}
       sha: ${{ steps.v.outputs.sha }}
@@ -75,6 +76,7 @@ jobs:
   source:
     needs: version
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
@@ -106,23 +108,31 @@ jobs:
           set -euo pipefail
           autoreconf -i
           ./configure
-          make dist-gzip dist-bzip2 dist-xz
+          # 三个 dist-* 必须各起一次 make：automake 打完一个包就把 distdir 删掉，
+          # 连写成 `make dist-gzip dist-bzip2 dist-xz` 会让后两个 tar 报 Cannot stat
+          make dist-gzip
+          make dist-bzip2
+          make dist-xz
       - name: Verify dist tarballs
         run: ci/fork/verify-dist.sh "$VERSION" "$ALLOW_STUB_MAN"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: meta
+          # artifact 只是 job 间的传递介质，产物已在 release 里 ⇒ 1 天即清，少占 Actions 存储
+          retention-days: 1
           path: |
             ChangeLog
             README.html
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sources
+          retention-days: 1
           path: aria2-*.tar.*
 
   mingw:
     needs: [version, source]
     runs-on: ubuntu-22.04
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -186,11 +196,13 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mingw-${{ matrix.label }}
+          retention-days: 1
           path: aria2-*-${{ matrix.label }}-build1.zip
 
   android:
     needs: [version, source]
     runs-on: ubuntu-22.04
+    timeout-minutes: 120
     env:
       VERSION: ${{ needs.version.outputs.version }}
       BUILD_REF: ${{ inputs.ref }}
@@ -238,11 +250,13 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: android-aarch64
+          retention-days: 1
           path: aria2-*-aarch64-linux-android-build1.zip
 
   publish:
     needs: [version, source, mingw, android]
     runs-on: ubuntu-22.04
+    timeout-minutes: 15
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       VERSION: ${{ needs.version.outputs.version }}
