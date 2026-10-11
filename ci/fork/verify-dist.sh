@@ -15,7 +15,9 @@ for ext in tar.gz tar.bz2 tar.xz; do
     [ -f "$f" ] || fail "缺源码包：$f"
     size=$(stat -c%s "$f")
     [ "$size" -gt 500000 ] || fail "$f 只有 $size 字节，疑似空包"
-    top=$(tar -tf "$f" | head -1)
+    # 不能用 head：它读完首行就关管道，tar 继续写会报 "tar: stdout: write error" 并以非 0 退出，
+    # 配合 set -o pipefail 会让校验假失败（包其实是好的）
+    top=$(tar -tf "$f" | sed -n 1p)
     [ "$top" = "aria2-$VERSION/" ] || fail "$f 首层目录是 $top，期望 aria2-$VERSION/"
     echo "  ✅ $f ($size 字节, 顶层 $top)"
 done
