@@ -1,9 +1,10 @@
 name: Build · CI
 
-# 编译 + 单元测试门禁。内容取自上游 .github/workflows/build.yml（同款 8 个矩阵、ASan+UBSan、make -j check），
-# 只有两处改动：
-#   ① action 钉完整 commit SHA —— 本 fork 开了 sha_pinning_required，写 @vX 会在 Set up job 阶段被拒；
-#   ② fail-fast: false —— 门禁要一次看全矩阵，默认在首个失败时取消其余 job，等于丢掉大半信号。
+# 编译 + 单元测试门禁。内容取自上游 .github/workflows/build.yml（同款矩阵、ASan+UBSan、make -j check），
+# 三处偏离上游：
+#   ① 只跑 Linux —— 本 fork 不产出 macOS 产物，且上游写的 macos-14 已在 2026-11 退役；
+#   ② action 钉完整 commit SHA —— 本 fork 开了 sha_pinning_required，写 @vX 会在 Set up job 阶段被拒；
+#   ③ fail-fast: false —— 门禁要一次看全矩阵，默认在首个失败时取消其余 job，等于丢掉大半信号。
 # 上游自己的 build.yml 在本 fork 永远死在 Set up job（策略拦截），已用仓库设置禁用，避免噪音红叉。
 
 on:
@@ -16,25 +17,21 @@ permissions:
 
 jobs:
   build:
+    timeout-minutes: 60
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-14]
         compiler: [gcc, clang]
         crypto: [openssl, gnutls]
         bittorrent: [with-bt, without-bt]
         exclude:
-        - os: macos-14
-          crypto: gnutls
         - crypto: openssl
           bittorrent: without-bt
 
-    runs-on: ${{ matrix.os }}
-
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-    - name: Linux setup
-      if: runner.os == 'Linux'
+    - name: Install deps
       run: |
         sudo apt-get update
         sudo apt-get install \
@@ -53,31 +50,16 @@ jobs:
           libsqlite3-dev \
           libssh2-1-dev \
           libcppunit-dev
-    - name: MacOS setup
-      if: runner.os == 'macOS'
-      run: |
-        brew install cppunit gettext openssl libssh2 c-ares sqlite3 \
-          autoconf automake pkg-config libtool
-    - name: Setup clang (Linux)
-      if: runner.os == 'Linux' && matrix.compiler == 'clang'
+    - name: Setup clang
+      if: matrix.compiler == 'clang'
       run: |
         echo 'CC=clang-15' >> $GITHUB_ENV
         echo 'CXX=clang++-15' >> $GITHUB_ENV
-    - name: Setup clang (MacOS)
-      if: runner.os == 'macOS' && matrix.compiler == 'clang'
-      run: |
-        echo 'CC=clang' >> $GITHUB_ENV
-        echo 'CXX=clang++' >> $GITHUB_ENV
-    - name: Setup gcc (Linux)
-      if: runner.os == 'Linux' && matrix.compiler == 'gcc'
+    - name: Setup gcc
+      if: matrix.compiler == 'gcc'
       run: |
         echo 'CC=gcc-12' >> $GITHUB_ENV
         echo 'CXX=g++-12' >> $GITHUB_ENV
-    - name: Setup gcc (MacOS)
-      if: runner.os == 'macOS' && matrix.compiler == 'gcc'
-      run: |
-        echo 'CC=gcc' >> $GITHUB_ENV
-        echo 'CXX=g++' >> $GITHUB_ENV
     - name: Libtool
       run: |
         autoreconf -i
@@ -96,20 +78,14 @@ jobs:
         FEATURE_FLAGS="$FEATURE_FLAGS --disable-bittorrent"
 
         echo 'FEATURE_FLAGS='"$FEATURE_FLAGS" >> $GITHUB_ENV
-    - name: Configure autotools (Linux, gnutls)
-      if: runner.os == 'Linux' && matrix.crypto == 'gnutls'
+    - name: Configure autotools (gnutls)
+      if: matrix.crypto == 'gnutls'
       run: |
         ./configure --with-gnutls --without-openssl $FEATURE_FLAGS
-    - name: Configure autotools (Linux, openssl)
-      if: runner.os == 'Linux' && matrix.crypto == 'openssl'
+    - name: Configure autotools (openssl)
+      if: matrix.crypto == 'openssl'
       run: |
         ./configure --without-gnutls --with-openssl $FEATURE_FLAGS
-    - name: Configure autotools (macOS)
-      if: runner.os == 'macOS'
-      run: |
-        ./configure \
-          --without-openssl --without-gnutls --with-appletls \
-          --disable-nls
     - name: Build aria2
       run: |
-        make -j"$(nproc 2> /dev/null || sysctl -n hw.ncpu)" check
+        make -j"$(nproc)" check
