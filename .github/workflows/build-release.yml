@@ -37,10 +37,10 @@ env:
   UPSTREAM_REPO: https://github.com/aria2/aria2
   BASE_VERSION: '1.37.0'
   BASE_RELEASE_TAG: release-1.37.0
-  # tag 命名规则：改这一行即可（例如改成 'v'、'aria2-'，或留空表示直接用版本串当 tag）
-  TAG_PREFIX: release-
-  # 想让这一页挂 Pre-release 徽标且不抢 Latest，改成 'true'
-  RELEASE_PRERELEASE: 'false'
+  # tag 名 = 前缀 + 版本串。前缀留空 ⇒ tag 就是版本串本身（例：1.37.0.r20261012.a1b2c3d）
+  TAG_PREFIX: ''
+  # 'true' ⇒ 页面挂 Pre-release 徽标、不抢 Latest
+  RELEASE_PRERELEASE: 'true'
   ALLOW_STUB_MAN: 'false'
 
 jobs:
@@ -288,14 +288,7 @@ jobs:
           TAG: ${{ needs.version.outputs.tag }}
         run: |
           set -euo pipefail
-          NOTES="$(printf '%s\n' \
-            "aria2 fork（Vstory/aria2.F）由 GitHub Actions 从最新上游代码编译，资产构成与官方 release 一致：" \
-            "源码包 tar.gz / tar.bz2 / tar.xz、Windows 32/64 位、Android aarch64。" \
-            "" \
-            "版本串 \`<上游版本>.r<构建日期>.<commit 短号>\` —— 上游 configure.ac 长期停在 1.37.0 且自 2023-11 未发布新版，" \
-            "所以版本号沿用上游值、只用后缀区分构建批次。" \
-            "" \
-            "构建 commit \`$SHA\`；ChangeLog 基线 \`$BASE_RELEASE_TAG\`。")"
+          NOTES="构建 commit \`$SHA\`；上游基线 \`$BASE_RELEASE_TAG\`。"
           # 展开时不加引号是有意的：空值必须让该参数整体消失
           PRERELEASE_FLAG=""
           if [ "$RELEASE_PRERELEASE" = "true" ]; then
@@ -304,10 +297,10 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             # 同一版本重跑（修 CI 用）走这一支：刷新正文、覆盖同名资产，不新建 tag
             echo "tag $TAG 已存在 —— 按重跑处理"
-            gh release edit "$TAG" --notes "$NOTES"
+            gh release edit "$TAG" --notes "$NOTES" $PRERELEASE_FLAG
           else
             gh release create "$TAG" \
-              --title "aria2 $VERSION" \
+              --title "$TAG" \
               --target "$SHA" \
               $PRERELEASE_FLAG \
               --notes "$NOTES"
