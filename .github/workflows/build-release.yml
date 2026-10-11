@@ -151,8 +151,8 @@ jobs:
       HOST: ${{ matrix.host }}
       LABEL: ${{ matrix.label }}
       VERSION: ${{ needs.version.outputs.version }}
-      BUILD_REF: ${{ inputs.ref }}
-      ARIA2_REF: ${{ needs.version.outputs.sha }}
+      # 按 commit 取源码的 sha：既给 patch 脚本，也作为 Dockerfile 的缓存哨兵参数（ARG 名仍是 ARIA2_REF）
+      ARIA2_SHA: ${{ needs.version.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -171,7 +171,7 @@ jobs:
           set -euo pipefail
           docker build \
             --build-arg HOST="$HOST" \
-            --build-arg ARIA2_REF="$ARIA2_REF" \
+            --build-arg ARIA2_REF="$ARIA2_SHA" \
             -f /tmp/Dockerfile.mingw.build \
             -t "aria2-mingw-$HOST" .
           mkdir -p mingw-out
@@ -211,7 +211,7 @@ jobs:
     timeout-minutes: 120
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      BUILD_REF: ${{ inputs.ref }}
+      ARIA2_SHA: ${{ needs.version.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
