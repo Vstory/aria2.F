@@ -2,7 +2,7 @@ name: Build · Release
 
 # 把 fork 的 master（= 上游最新代码）编成与官方 release 同形态的 6 个资产，
 # 每次构建打一个新 tag、发一版一页（对齐官方 release-<版本> 的做法，不做滚动页、不清理旧页）。
-# tag 名 = TAG_PREFIX + 版本串，版本串形如 1.37.0.r<日期>.<短号>。
+# tag 名 = TAG_PREFIX + 版本串，形如 v1.37.0-r<日期>.<短号>：`-` 起预发布段，这样才是合法 semver（工具能解析）。
 #
 # 设计约束（见 ci/fork/README.md 之外的取舍都写在这里）：
 #   · 上游的 Dockerfile.mingw / Dockerfile.android / mingw-release / android-release / script-helper
@@ -38,7 +38,7 @@ env:
   BASE_VERSION: '1.37.0'
   BASE_RELEASE_TAG: release-1.37.0
   # tag 名 = 前缀 + 版本串。前缀留空 ⇒ tag 就是版本串本身（例：1.37.0.r20261012.a1b2c3d）
-  TAG_PREFIX: ''
+  TAG_PREFIX: 'v'
   # 'true' ⇒ 页面挂 Pre-release 徽标、不抢 Latest
   RELEASE_PRERELEASE: 'true'
   ALLOW_STUB_MAN: 'false'
@@ -67,7 +67,7 @@ jobs:
           # 发布页正文要挂上游开发线的当前尖端，每次构建现取
           UPSTREAM_SHA=$(git ls-remote "$UPSTREAM_REPO" refs/heads/master | sed -n 1p | cut -f1)
           [ -n "$UPSTREAM_SHA" ] || { echo "::error::解析不出上游 master 的 commit"; exit 1; }
-          VERSION="$BASE_VERSION.r$(date -u +%Y%m%d).${SHA:0:7}"
+          VERSION="$BASE_VERSION-r$(date -u +%Y%m%d).${SHA:0:7}"
           TAG="$TAG_PREFIX$VERSION"
           {
             echo "version=$VERSION"
