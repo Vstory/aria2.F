@@ -1,6 +1,7 @@
 name: Build · Release
 
-# 把 fork 的 master（= 上游最新代码）编成与官方 release 同形态的 6 个资产，
+# 把 fork 的 master（= 上游最新代码）编成 9 个资产发一版：3 个源码包 + 2 个 Windows + 4 个 Android 架构
+# （源码包与 Windows 与官方 release 同形态；Android 在官方的 aarch64 之外另出 armv7a / i686 / x86_64），
 # 每次构建打一个新 tag、发一版一页（对齐官方 release-<版本> 的做法，不做滚动页、不清理旧页）。
 # tag 名 = TAG_PREFIX + 版本串，形如 v1.37.0-r<日期>.<短号>：`-` 起预发布段，这样才是合法 semver（工具能解析）。
 #
@@ -215,9 +216,19 @@ jobs:
     needs: [version, source]
     runs-on: ubuntu-22.04
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        # NDK 三元组名，同时用作包名后缀（与上游 aarch64 那个资产同构）
+        host:
+          - aarch64-linux-android
+          - armv7a-linux-androideabi
+          - i686-linux-android
+          - x86_64-linux-android
     env:
       VERSION: ${{ needs.version.outputs.version }}
       ARIA2_SHA: ${{ needs.version.outputs.sha }}
+      ANDROID_HOST: ${{ matrix.host }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -230,21 +241,40 @@ jobs:
         run: ci/fork/prepare-source.sh inject "$VERSION"
       - name: Patch Dockerfile (temp copy)
         run: ci/fork/patch-dockerfile.sh Dockerfile.android /tmp/Dockerfile.android.build
+      # 上游的 android-release 把架构写死在 DIST_DIR 里（不像 mingw-release 吃 LABEL 环境变量），
+      # 多架构必须参数化；改的是工作区副本、不产生提交。命中不足即 fail —— 上游改了这行就会响铃。
+      - name: Patch android-release for target ABI
+        run: |
+          set -euo pipefail
+          sed -i 's|^DIST_DIR=aria2-\$VERSION-aarch64-linux-android-build1$|DIST_DIR=aria2-$VERSION-${ANDROID_HOST}-build1|' android-release
+          grep -qF 'DIST_DIR=aria2-$VERSION-${ANDROID_HOST}-build1' android-release || {
+            echo "::error::android-release 的 DIST_DIR 未按预期改写：上游结构已变"; exit 1; }
       - name: Build android image and extract binary
         run: |
           set -euo pipefail
-          docker build -f /tmp/Dockerfile.android.build -t aria2-android .
+          IMAGE="aria2-android-$ANDROID_HOST"
+          docker build -f /tmp/Dockerfile.android.build -t "$IMAGE" .
           mkdir -p android-out
-          docker run --rm -v "$PWD/android-out:/out" aria2-android \
+          docker run --rm -v "$PWD/android-out:/out" "$IMAGE" \
             cp /root/build/aria2/src/aria2c /out
-          ls -la android-out
+          file android-out/aria2c
       - name: Package
         run: ./android-release
       - name: Verify package
         run: |
           set -euo pipefail
-          ZIP="aria2-$VERSION-aarch64-linux-android-build1.zip"
+          ZIP="aria2-$VERSION-$ANDROID_HOST-build1.zip"
           [ -f "$ZIP" ] || { echo "::error::缺产物 $ZIP"; exit 1; }
+          # 防「矩阵对、镜像里编错架构」：按三元组核对 ELF 头
+          case "$ANDROID_HOST" in
+            aarch64-linux-android)    want="64-bit.*ARM aarch64" ;;
+            armv7a-linux-androideabi) want="32-bit.*ARM, EABI5" ;;
+            i686-linux-android)       want="32-bit.*Intel 80386" ;;
+            x86_64-linux-android)     want="64-bit.*x86-64" ;;
+            *) echo "::error::未知架构 $ANDROID_HOST"; exit 1 ;;
+          esac
+          file android-out/aria2c | grep -qE "$want" || {
+            echo "::error::$ANDROID_HOST 的产物架构不符：$(file android-out/aria2c)"; exit 1; }
           ZIP="$ZIP" python3 - <<'PY'
           import os, zipfile
           z = zipfile.ZipFile(os.environ["ZIP"])
@@ -261,9 +291,9 @@ jobs:
           PY
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: android-aarch64
+          name: android-${{ matrix.host }}
           retention-days: 1
-          path: aria2-*-aarch64-linux-android-build1.zip
+          path: aria2-*-${{ matrix.host }}-build1.zip
 
   publish:
     needs: [version, source, mingw, android]
@@ -291,19 +321,24 @@ jobs:
         with:
           name: mingw-win-64bit
           path: dist
+      # android 各架构的产物用 pattern 一次拉全（sources / mingw / meta 不匹配 android-*）
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: android-aarch64
+          pattern: android-*
           path: dist
+          merge-multiple: true
       - name: Check asset set
         run: |
           set -euo pipefail
           ls -l dist
           count=$(find dist -type f | wc -l)
-          [ "$count" -eq 6 ] || { echo "::error::资产数 $count（期望 6）"; exit 1; }
+          [ "$count" -eq 9 ] || { echo "::error::资产数 $count（期望 9）"; exit 1; }
           for f in "aria2-$VERSION.tar.gz" "aria2-$VERSION.tar.bz2" "aria2-$VERSION.tar.xz" \
                    "aria2-$VERSION-win-32bit-build1.zip" "aria2-$VERSION-win-64bit-build1.zip" \
-                   "aria2-$VERSION-aarch64-linux-android-build1.zip"; do
+                   "aria2-$VERSION-aarch64-linux-android-build1.zip" \
+                   "aria2-$VERSION-armv7a-linux-androideabi-build1.zip" \
+                   "aria2-$VERSION-i686-linux-android-build1.zip" \
+                   "aria2-$VERSION-x86_64-linux-android-build1.zip"; do
             [ -f "dist/$f" ] || { echo "::error::缺资产 $f"; exit 1; }
           done
       - name: Publish release

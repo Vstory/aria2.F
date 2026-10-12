@@ -2,6 +2,10 @@
 # 由上游 Dockerfile 生成构建用临时副本：把源码来源从上游 aria2/aria2 换成 fork 的指定 commit，
 # 并在容器内注入 CI 版本串。上游文件一字不改（fork 与上游保持可同步）。
 #
+# Android 多架构：设 ANDROID_HOST 为 NDK 三元组（aarch64-linux-android / armv7a-linux-androideabi /
+# i686-linux-android / x86_64-linux-android），脚本会连带改掉 HOST 行与 OpenSSL 的专用 target；
+# 不设则维持上游的 aarch64。
+#
 # 上游改动 Dockerfile 里这几行时本脚本会直接 fail —— 这是刻意的「响铃」：
 # 静默失配会构建出「其实是上游源码 / 版本号没带短号」的假货，比 CI 报红危险得多。
 set -euo pipefail
@@ -86,6 +90,34 @@ text, hits_curl = re.subn(r"curl -L -O http",
                           "curl -L -O --retry 5 --retry-delay 5 --connect-timeout 20 http", text)
 if hits_curl != before_curls:
     problems.append("curl 加固命中 %d 处（期望 %d 处）" % (hits_curl, before_curls))
+
+# Android 的架构在 Dockerfile 里是写死的两处：HOST（CC / CXX 由它派生）与 OpenSSL 的专用 target。
+# OpenSSL 的 Android target 名与 NDK 三元组不同名，必须显式映射；其余依赖与 aria2 自己都吃
+# --host=$HOST，会自动跟随。ANDROID_HOST 缺省时维持上游的 aarch64 行为。
+ANDROID_OPENSSL_TARGET = {
+    "aarch64-linux-android": "android-arm64",
+    "armv7a-linux-androideabi": "android-arm",
+    "i686-linux-android": "android-x86",
+    "x86_64-linux-android": "android-x86_64",
+}
+if "HOST=aarch64-linux-android" in text:
+    android_host = os.environ.get("ANDROID_HOST", "").strip() or "aarch64-linux-android"
+    openssl_target = ANDROID_OPENSSL_TARGET.get(android_host)
+    if openssl_target is None:
+        problems.append("ANDROID_HOST=%s 不在已知架构表里（缺 OpenSSL target 映射）" % android_host)
+    else:
+        text, hits_host = re.subn(re.escape("HOST=aarch64-linux-android"),
+                                  "HOST=%s" % android_host, text)
+        text, hits_ssl = re.subn(re.escape("--prefix=$PREFIX android-arm64"),
+                                 "--prefix=$PREFIX %s" % openssl_target, text)
+        if hits_host != 1:
+            problems.append("android HOST 行命中 %d 处（期望 1 处）：上游 Dockerfile 结构已变" % hits_host)
+        if hits_ssl != 1:
+            problems.append("OpenSSL android target 命中 %d 处（期望 1 处）：上游 Dockerfile 结构已变" % hits_ssl)
+        if android_host != "aarch64-linux-android" and "aarch64" in text:
+            problems.append("替换后仍残留 aarch64（架构未改全）")
+        if "CC=$TOOLCHAIN/bin/$HOST$API-clang" not in text:
+            problems.append("CC 派生行被改动（CC / CXX 必须继续由 $HOST 派生）")
 
 for stale in ("github.com/aria2/aria2", "api.github.com/repos/aria2/aria2"):
     if stale in text:
