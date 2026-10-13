@@ -46,16 +46,45 @@ fetch_cmd = (
 )
 # --version 输出里的 fork 版权行：补丁随源码进容器（fetch 下来的就是 fork 仓库，补丁在 ci/fork/patches/）。
 # 源码包与容器必须打同一份补丁，否则二进制与「对应源码」对不上（GPL 的 source 义务）。
-copyright_patch = "ci/fork/patches/0001-version-copyright.patch"
-if not os.path.exists(copyright_patch):
-    problems.append("版权补丁文件缺失：%s" % copyright_patch)
-apply_cmd = "git apply %s" % copyright_patch
+# 0002 只对 Windows 生效（#ifdef __MINGW32__），android 打上也无副作用 —— 两个平台打同一组补丁，
+# 源码包才算完整对应。
+FORK_PATCHES = ["ci/fork/patches/0001-version-copyright.patch",
+                "ci/fork/patches/0002-windows-ca-store.patch"]
+for p in FORK_PATCHES:
+    if not os.path.exists(p):
+        problems.append("补丁文件缺失：%s" % p)
+apply_cmd = " && ".join("git apply %s" % p for p in FORK_PATCHES)
 clone_old = r"git clone -b \$ARIA2_VERSION --depth 1 https://github\.com/aria2/aria2"
+
+# Windows 换用 OpenSSL 后端：WinTLS(SChannel) 只请求 TLS 1.1/1.2，连不上只开 TLS 1.3 的站点
+# （SChannel 回 SEC_E_UNSUPPORTED_FUNCTION / 80090302）。上游 mingw-config 写死
+# --without-openssl，容器内改工作区副本即可，上游文件照旧一字不改。
+# 配套：0002 补丁顺手给 crypt32 依赖（OpenSSL 未启用的 WS2_32 族库不会自动带进来）。
+mingw_openssl_build = """ENV OPENSSL_VERSION=1.1.1w
+RUN curl -L -O --retry 5 --retry-delay 5 --connect-timeout 20 \\
+        https://www.openssl.org/source/openssl-$OPENSSL_VERSION.tar.gz && \\
+    tar xf openssl-$OPENSSL_VERSION.tar.gz && \\
+    cd openssl-$OPENSSL_VERSION && \\
+    if [ "${HOST%%-*}" = "i686" ]; then OS_TARGET=mingw; else OS_TARGET=mingw64; fi && \\
+    ./Configure no-shared no-tests no-asm --prefix=/usr/local/$HOST \\
+        --cross-compile-prefix=$HOST- $OS_TARGET && \\
+    make -j$(nproc) && make install_sw
+
+"""
+# 单引号包住 sed 表达式，$PREFIX 留给容器内的 shell 展开（mingw-config 里就是字面 $PREFIX）
+mingw_config_fix = (
+    "sed -i 's|--without-openssl|--with-openssl|' mingw-config && "
+    'grep -qF -- "--with-openssl" mingw-config && '
+    '! grep -qF -- "--without-openssl" mingw-config && '
+    """sed -i 's|LDFLAGS="-L$PREFIX/lib"|LDFLAGS="-L$PREFIX/lib -lcrypt32"|' mingw-config && """
+    'grep -qF -- "-lcrypt32" mingw-config'
+)
 
 # 形态 A：clone 与其后的 cd 在同一条 RUN 里（Dockerfile.mingw）
 pat_a = re.compile(clone_old + r" && \\\n[ \t]*cd aria2")
-new_a = "%s && %s && %s" % (
-    fetch_cmd.format(dir="aria2", fork=fork, sha=sha), sed_inject(), apply_cmd)
+new_a = "%s && %s && %s && %s" % (
+    fetch_cmd.format(dir="aria2", fork=fork, sha=sha), sed_inject(), apply_cmd,
+    mingw_config_fix)
 # 形态 B：clone 独占一行（Dockerfile.android，紧随其后是 WORKDIR）
 pat_b = re.compile(clone_old + r"[ \t]*$", re.M)
 new_b = "%s && %s && %s" % (
@@ -66,7 +95,20 @@ text, hits_b = pat_b.subn(lambda _: new_b, text, count=1)
 if hits_a + hits_b != 1:
     problems.append("git clone 行命中 %d 处（期望 1 处）：上游 Dockerfile 结构已变" % (hits_a + hits_b))
 if text.count(apply_cmd) != 1:
-    problems.append("版权补丁应用语句命中 %d 处（期望 1 处）" % text.count(apply_cmd))
+    problems.append("补丁应用语句命中 %d 处（期望 1 处）" % text.count(apply_cmd))
+if text.count(mingw_config_fix) != hits_a:
+    problems.append("mingw-config 改写语句命中 %d 处（期望 %d 处，应与形态 A 一致）"
+                    % (text.count(mingw_config_fix), hits_a))
+
+# Windows 侧补 OpenSSL 交叉编译：插在 ARG ARIA2_VERSION 之前（依赖已装完）。用 ./mingw-config
+# 判定文件身份，Dockerfile.android 不含该串因而不会中招。
+if "./mingw-config" in text:
+    anchor = "ARG ARIA2_VERSION=master"
+    if text.count(anchor) != 1:
+        problems.append("mingw 的 %s 锚点命中 %d 处（期望 1 处）：上游结构已变"
+                        % (anchor, text.count(anchor)))
+    else:
+        text = text.replace(anchor, mingw_openssl_build + anchor, 1)
 
 # ADD 行是 Docker 层缓存的哨兵（mingw 有、android 没有）。上游写的是 /git/$ARIA2_REF，
 # 而 /git/{sha} 不是 GitHub 的端点（404）—— 必须换成 /commits/{sha}。

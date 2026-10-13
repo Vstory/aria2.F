@@ -8,7 +8,7 @@ cd "$(dirname "$0")/../.."
 usage() {
     echo "usage: $0 inject <version>" >&2
     echo "       $0 changelog <base-tag>" >&2
-    echo "       $0 copyright" >&2
+    echo "       $0 patches" >&2
     exit 2
 }
 
@@ -41,17 +41,23 @@ changelog)
     git log --pretty=fuller --date=short "refs/tags/$arg..HEAD" >ChangeLog
     echo "ChangeLog: $(wc -l <ChangeLog) 行（$arg..HEAD）"
     ;;
-copyright)
-    # --version 里那行 fork 版权：GPLv2 §2(a) 要求修改版带「已修改」的显著声明，
-    # 且发布的二进制必须配同源源码 —— 所以补丁打在打包前的工作区，容器构建用同一份补丁
-    patch_file="ci/fork/patches/0001-version-copyright.patch"
-    git apply --check "$patch_file"
-    git apply "$patch_file"
+patches)
+    # 逐条应用 ci/fork/patches/ 下的全部补丁（顺序 = 文件名顺序），目录即清单，新增补丁不必改这里。
+    # 发布的二进制必须配同源源码（GPL 的 source 义务），所以源码包与容器构建打同一组补丁 ——
+    # 容器侧的同一组补丁由 ci/fork/patch-dockerfile.sh 施加。
+    for patch_file in ci/fork/patches/*.patch; do
+        git apply --check "$patch_file"
+        git apply "$patch_file"
+        echo "  已应用 $(basename "$patch_file")"
+    done
+    # 每条补丁各留一条断言：git apply 成功但内容没落地（行号漂到别处）比打不上更危险
     grep -qF 'Copyright (C) 2026 Vstory (modified version of aria2)' src/version_usage.cc \
         || { echo "版权补丁未生效" >&2; exit 1; }
     grep -qF 'Copyright (C) 2006, 2019 Tatsuhiro Tsujikawa' src/version_usage.cc \
         || { echo "原作者版权行被删了" >&2; exit 1; }
-    echo "src/version_usage.cc → 已加 fork 版权行（原作者行保留）"
+    grep -qF 'CertOpenSystemStoreW' src/LibsslTLSContext.cc \
+        || { echo "Windows 证书库补丁未生效" >&2; exit 1; }
+    echo "src/version_usage.cc + src/LibsslTLSContext.cc → 补丁已就位"
     ;;
 *)
     usage

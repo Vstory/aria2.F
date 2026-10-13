@@ -1,0 +1,61 @@
+diff --git a/src/LibsslTLSContext.cc b/src/LibsslTLSContext.cc
+index 2cf78323..00bacbdf 100644
+--- a/src/LibsslTLSContext.cc
++++ b/src/LibsslTLSContext.cc
+@@ -40,6 +40,11 @@
+ #include <openssl/err.h>
+ #include <openssl/pkcs12.h>
+ #include <openssl/bio.h>
++#include <openssl/x509_vfy.h>
++#ifdef __MINGW32__
++#  include <windows.h>
++#  include <wincrypt.h>
++#endif
+ 
+ #include "LogFactory.h"
+ #include "Logger.h"
+@@ -275,6 +280,44 @@ bool OpenSSLTLSContext::addP12CredentialFile(const std::string& p12file)
+ 
+ bool OpenSSLTLSContext::addSystemTrustedCACerts()
+ {
++#ifdef __MINGW32__
++  // 交叉编译出的 Windows 二进制里，OpenSSL 的默认验证路径指向构建容器的 OPENSSLDIR，
++  // 那个目录没有证书。WinTLS 后端能自动用系统证书库、OpenSSL 后端不能，所以在这里自己
++  // 枚举 Windows 的 ROOT 库灌进 X509_STORE —— 不做这步，换用 OpenSSL 后所有 https 都会
++  // 报「证书无法验证」。
++  HCERTSTORE store = ::CertOpenSystemStoreW(0, L"ROOT");
++  if (store) {
++    X509_STORE* x509Store = SSL_CTX_get_cert_store(sslCtx_);
++    int added = 0;
++    PCCERT_CONTEXT cert = nullptr;
++    while ((cert = ::CertEnumCertificatesInStore(store, cert))) {
++      const unsigned char* der = cert->pbCertEncoded;
++      X509* x = d2i_X509(nullptr, &der, cert->cbCertEncoded);
++      if (!x) {
++        ERR_clear_error();
++        continue;
++      }
++      if (X509_STORE_add_cert(x509Store, x) == 1) {
++        ++added;
++      }
++      else {
++        ERR_clear_error(); // 系统库里本就有重复项，重复添加会报错但无害
++      }
++      X509_free(x);
++    }
++    ::CertCloseStore(store, 0);
++    if (added > 0) {
++      A2_LOG_INFO(fmt("Loaded %d CA certificates from the Windows ROOT store.",
++                      added));
++      return true;
++    }
++    A2_LOG_INFO("Windows ROOT store yielded no usable CA certificate.");
++  }
++  else {
++    A2_LOG_INFO(fmt(MSG_LOADING_SYSTEM_TRUSTED_CA_CERTS_FAILED,
++                    "CertOpenSystemStoreW failed"));
++  }
++#endif
+   if (SSL_CTX_set_default_verify_paths(sslCtx_) != 1) {
+     A2_LOG_INFO(fmt(MSG_LOADING_SYSTEM_TRUSTED_CA_CERTS_FAILED,
+                     ERR_error_string(ERR_get_error(), nullptr)));
