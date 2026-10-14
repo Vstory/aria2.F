@@ -17,7 +17,16 @@ name: Build · Release
 #     上游的 build.yml 因此在 fork 上永远跑不起来。此文件里的 action 一律钉完整 SHA，
 #     升级时连同行尾版本注释一起改（Dependabot 也认这种形式）。
 
+# 触发：代码进 master 就自动发一版（push），手动 workflow_dispatch 只作逃生口（可换 ref 发版）。
+#   注意 push 触发时 `inputs` 上下文为空 ⇒ 全部 ref 取值写成 `inputs.ref || github.ref_name`，
+#   否则 version job 会拿空 ref 去 ls-remote、直接报「解析不出 ref」。
 on:
+  push:
+    branches: ['master']
+    paths-ignore:            # 纯文档改动不发正式版
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
   workflow_dispatch:
     inputs:
       ref:
@@ -56,7 +65,7 @@ jobs:
     steps:
       - id: v
         env:
-          REF: ${{ inputs.ref }}
+          REF: ${{ inputs.ref || github.ref_name }}
         run: |
           set -euo pipefail
           SHA=""
@@ -94,7 +103,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.ref_name }}
           fetch-depth: 0
       - name: Install build deps
         run: |
@@ -163,7 +172,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.ref_name }}
       - name: Fetch ChangeLog / README.html
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -232,7 +241,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.ref_name }}
       - name: Fetch ChangeLog / README.html
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
